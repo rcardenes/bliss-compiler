@@ -129,7 +129,31 @@ There are two primitives associated to coroutines:
 
 `CREATE` establishes a new context (AKA, a stack) for the function named in `e`. The stack is set up beginning at word `e2` and its size will be of `e3` words. The activation point is the head of the function named by `e`. At the point of `CREATE` the coroutine will not be activated. `e4` won't be evaluated either. The value for the `CREATE` expression will be the "process name" for a new coroutine.
 
-`EXCHJ` allows to switch from the currently executing context and a different one by performing an "exchange jump". Control will be passed to the coroutine named by `e5`, and `e6` will become the value of the last used control expression that caused control to be passed out of the coroutine named by `e5` (sort of a mid-return value; think of Python's `yield` for generators, for example.)
+`EXCHJ` allows to switch from the currently executing context and a different one by performing an "exchange jump". Control will be passed to the coroutine named by `e5`, and `e6` will become the value of the `EXCHJ` expression that was last used to transfer control out of the coroutine named by `e5`. For example:
+
+    BEGIN
+      OWN pa, pb, s1[100], s2[100];
+      a = FUNCTION() =
+        BEGIN
+           ...
+           x = EXCHJ(.pb, 1);
+           ...
+        END;
+      b = FUNCTION() =
+        BEGIN
+           ...
+           y = EXCHJ(.pa, 2);
+           ...
+        END;
+      pa = CREATE a() AT s1 LENGTH 100 THEN exit;
+      pb = CREATE b() AT s2 LENGTH 100 THEN exit;
+      EXCHJ(.pa, 0);
+    END
+
+Two functions (`a`, `b`) are declared, and then two coroutines are created (names bound to `pa` and `pb`). Finally, we start the corouting named at `pa`, passing `0` as a value. No `EXCHJ` has been used to leave the coroutine at `pa` at this point, so the `0` is ignored. Eventually, `x = EXCHJ(.pb, 1);` is reached, passing control to the coroutine at `pb`, which starts execution similarly to `pa`.
+Once the control flow reaches `y = EXCHJ(.pa, 2);`, control passes back to the first coroutine. But this time, control had left earlier
+by means of an `EXCHJ`, meaning that the value passed (`2`) becomes the return value of that original expression, and gets stored as
+`.x`.
 
 We haven't talked yet about the expression `e4`: it's executed only when and if control passes out of the _body_ of the coroutine by a normal subroutine-type return. The normal (minimal) action expected of `e4` is returning the stack space used by the coroutine and `EXCHJ` to another, active coroutine.
 
@@ -150,7 +174,97 @@ Each one of them exit from a specitic kind of structure (block, compound, loop, 
 
 ### Data Structures
 
-<TBD>
+Earlier we've mentioned pointers, but keeping things relatively vague. A pointer in BLISS is a 5-tuple that consists of:
+* A word address (_wa_)
+* A field position (_p_)
+* A field size (_s_)
+* A register name
+* An "indirect address" bit
+All those get encoded (at least in the original language) in a single word and can be manipulated by the language. More
+details can be found in the Reference Manual[^2]. In BLISS the notation to specify a pointer, using only the first 3
+values, is _wa<p,s>_. Take for example:
+
+    OWN x[100]
+
+In the PDP-11, this declaration would bind `x` to a pointer to the 36-bit field which is the first word of a 100-word
+segment. So, `wa` of the pointer `x` is the location allocated to the segment, `p` is 0, and `s` is 36 (bits). This
+might be confusing (one could expect size to be 100), but the pointer is to the **first word** of the segment, which
+is a 36-bit field, and we'd express it as _x<0, 36>. _X<3,4>_ would then be a pointer to a 4-bit field 3 bits from the
+right end of a word named `X`. The word address was encoded in the lower bits of the pointer, so that pointer arithmetic
+would work by words when adding small integers. So, if `x` is a pointer, then `x+1` points to word following that pointed
+by `x`.
+
+> [!IMPORTANT]
+> The original PDP-11 computers could address up to 64KB (32K words) and later, higher end ones could address up to 4MB.
+> Such addressing could be done with just 22 bits (and the words were 36 bits!), and even at that, this was achieved
+> using an MMU, and individual processes were typically limited to a virtual address space of just 64KB (16-bit addressing),
+> meaning that a large chunk of a pointer was available for encoding the other attributes.
+>
+> A 64-bit register as available in modern X86_64 or AArch64 can address enormous amounts of virtual RAM, but this is of course
+> limited in practice by the amount of physical RAM available in the system (e.g., 16-32GB are the most common amounts seen
+> in laptops or desktops at the time of writing, and larger than this is typically seen only in very high end workstations
+> or servers, particularly now that AI can benefit of unified memory schemes). Even 128GB can be addressed by a mere 37 bits,
+> meaning that there's ample room to describe the rest of the attributes.
+>
+> Even furhter, the OS will usually limit the amount of RAM available to each process. In Linux (the target for this compiler),
+> while it's possible to use up to 52 or 57 bits (architecture dependent) for the address, it's typically to limit it by
+> default to 48 bits for compatibility reasons. And this would allow addressing terabytes of RAM, which is way, way beyond
+> practical.
+
+> [!NOTE]
+> Given the limitations mentioned above, there's plenty of room in the upper bits of our pointers to encode the additional
+> information. This might be a bit more challenging if targeting a 32-bit architecture, because addresing the maximum 4GB
+> has been a realistic possibility for many years, but I'm not going target any such architecture at this time. I'll cross
+> that particular bridge when (and if) I get to it.
+
+#### Mapping
+
+Back in the day, the designers of BLISS looked at how systems programmers worked and noticed that a lot of their design
+effort was spent in figuring out how to encode and access the information they were working on, efficiently. This was
+a big design driver for the language. They wanted two things:
+* The user must be able to specify an _accessing algorithm_ for the structure's individual elements.
+* The structure definition and the algorithms must be separate - an early jab at separation of concerns, in the hope
+  that modifications on one side of the equation wouldn't have (much of) an effect on the other.
+With this in mind they derived their pointer design (see above) and introduced a couple of primitives that allowed
+describing structure mechanisms:
+
+    STRUCTURE <name>[<formal parameter list>] = e
+    MAP <name> <name list>
+
+The former allows the definition of a class of structures by suplying an algorithm accessing the structure elements.
+The latter allows associating a structure class to a colon-separated list of names. Example:
+
+    BEGIN
+      STRUCTURE ary2[i, j] = (.ary2 + .i * 10 + .j);
+      OWN x[100], y[100], z[100];
+      MAP ary2 x:y:z;
+      ...
+      x[.a, .b] = .y[.b, .a];
+      ...
+    END
+
+This piece of code declares a structure `ary2` to address two-dimensional 10xn arrays. Then it proceeds to declare three
+segments of 100 words each, which finally get associated to the structure class `ary2` using the `MAP` declaration. By
+doing that the `x[e1, e2]` and `y[e3, e4]` (and `z[e5, e6]`, but it's not shown here) forms are valid
+**within this block**. The `STRUCTURE` declaration then would work as a sort of macro. The example expression is probably
+transposing the contents of `y` into `x`.
+
+In a way, the way the expression defined with `STRUCTURE` functions is similar to that of an object's method. We could
+do something equivalent by writing:
+
+    FUNCTION ary2(f0, f1, f2) = (.f0 + .f1 * 10 + .f2)
+    OWN x[100], y[100], z[100];
+    ...
+    ary2(x, .a, .b) = ary2(y, .b, .a)
+    ...
+
+where `f0` would take the same role as an explicit `this` or `self` in object-oriented languages. The main practical
+difference between the above `FUNCTION` and `STRUCTURE` definitions, besides the implied "argument", is that the
+function allocates storage in the stack for its formal parameters, as common for any function call that we're used
+to, but the code generated when mapping a structure doesn't seem to do this, and of course there's no branching to
+and returning from the function. It would be more akin to an explicit function inlining.
+
+<TBD: More on parameterized structures>
 
 ## Tentative grammar
 
@@ -195,7 +309,8 @@ Each one of them exit from a specitic kind of structure (block, compound, loop, 
     declaration         = storage_declaration 
                         | bind_declaration 
                         | routine_declaration 
-                        | macro_declaration
+                        | structure_declaration
+                        | map_declaration
                         ;
     
     storage_declaration = ( "OWN" | "LOCAL" | "GLOBAL" | "EXTERNAL" | "REGISTER" ) , allocation_list , ";" ;
@@ -205,6 +320,16 @@ Each one of them exit from a specitic kind of structure (block, compound, loop, 
     bind_declaration    = "BIND" , bind_list , ";" ;
     bind_list           = bind_item , { "," , bind_item } ;
     bind_item           = identifier , "=" , expression ;
+
+    (* STRUCTURE defines the access algorithm formula *)
+    structure_declaration = "STRUCTURE" , structure_list , ";" ;
+    structure_list        = structure_item , { "," , structure_item } ;
+    structure_item        = identifier , [ "[" , formal_parameters , "]" ] , "=" , expression ;
+    formal_struct_params  = identifier , { ", " , identifier } ;
+
+    (* MAP binds a structure formula to actual memory blocks *)
+    map_declaration       = "MAP" , identifier , map_list , ";" ;
+    map_list              = identifier , { ":" , identifier } ;
     
     control_expr       = if_expr 
                        | conditional_loop 
@@ -280,4 +405,4 @@ Each one of them exit from a specitic kind of structure (block, compound, loop, 
 ## Literature
 
 [^1]: **[Wul71]** W. A. Wulf, D. B. Russell, and A. N. Habermann "BLISS: A Language for System Programming," CACM 14,12 (Dec. 1971), 780-790
-
+[^2]: **[Wul72]** W. A. Wulf et al, "BLISS reference manual", Computer Science Dept. Rep. Carnegie-Mellon University.
