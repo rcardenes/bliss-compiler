@@ -364,6 +364,8 @@ and returning from the function. It would be more akin to an explicit function i
 
     select_component   = select_label , ":" , expression , ";" ;
 
+    (* OTHERWISE was not present in the original paper. It was added during            *)
+    (* implementation to prevent bugs due to undefined behavior                        *)
     select_label       = expression       (* Matches if .selector_expr EQL .label_expr *)
                        | "OTHERWISE" ;    (* Default fallback branch *)
     
@@ -380,7 +382,7 @@ and returning from the function. It would be more akin to an explicit function i
     
     actual_parameters   = expression , { "," , expression } ;
     
-    identifier         = letter , { letter | digit } ;
+    identifier         = letter , { letter | digit | "_" } ;
 
     (* CREATE instantiates the coroutine environment *)
     create_expr        = "CREATE" , identifier , "(" , actual_parameters , ")" , 
@@ -391,15 +393,24 @@ and returning from the function. It would be more akin to an explicit function i
     (* EXCHJ yields/swaps execution to another coroutine context *)
     exchj_expr         = "EXCHJ" , "(" , expression , "," , expression , ")" ;
     
-    integer_constant   = decimal_digits | octal_digits ;
+    integer_constant   = decimal_digits
+                       | binary_digits
+                       | octal_digits
+                       | hexadecimal_digits
+                       ;
+    
     decimal_digits     = digit , { digit } ;
-    octal_digits       = octal_digit , { octal_digit } , ( "O" | "o" ) ;
+    binary_digits      = '%', 'B', binary_digit , { binary_digit } ;
+    octal_digits       = '%', 'O', octal_digit , { octal_digit } ;
+    hexadecimal_digits = '%', 'X', hexadecimal_digit , { hexadecimal_digit } ;
     
     string_literal     = "'" , { character - "'" | "''" } , "'" ;
     
-    letter             = "A" | ... | "Z" | "a" | ... | "z" ;
-    digit              = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" ;
-    octal_digit        = "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" ;
+    letter             = "A" | ... | "Z" ;
+    binary_digit       = "0" | "1" ;
+    octal_digit        = "0" | ... | "7" ;
+    digit              = "0" | ... | "9" ;
+    hexadecimal_digit  = "0" | ... | "9" | "A" | ... | "F" ;
 
 
 ## Literature
